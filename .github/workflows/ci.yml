@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm audit --prod --audit-level high
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: handcraft
+          POSTGRES_USER: handcraft
+          POSTGRES_PASSWORD: integration-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U handcraft -d handcraft"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://handcraft:integration-password@127.0.0.1:5432/handcraft
+      SESSION_SECRET: integration-session-secret-abcdefghijklmnopqrstuvwxyz-123456
+      PUBLIC_APP_URL: http://127.0.0.1:3000
+      COOKIE_SECURE: "false"
+      APP_HOST: 127.0.0.1
+      APP_PORT: 3000
+      LOG_LEVEL: silent
+      SMOKE_PASSWORD: smoke-test-password-123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @handcraft/contracts build
+      - run: pnpm --filter @handcraft/api build
+      - run: pnpm --filter @handcraft/api db:migrate
+      - run: |
+          node apps/api/dist/server.js &
+          API_PID=$!
+          trap 'kill $API_PID 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health/ready >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/health/ready >/dev/null
+          SMOKE_BASE_URL=http://127.0.0.1:3000 node ops/smoke-test.mjs

@@ -1,0 +1,16 @@
+{
+  "name": "handcraft-material-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @handcraft/contracts build && pnpm --parallel --filter @handcraft/contracts --filter @handcraft/api --filter @handcraft/web dev",
+    "test": "pnpm --filter @handcraft/contracts build && pnpm -r test",
+    "typecheck": "pnpm --filter @handcraft/contracts build && pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @handcraft/api db:migrate"
+  }
+}
