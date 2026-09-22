@@ -6,6 +6,7 @@ import { AppError } from "../lib/errors.js";
 import { parseInput } from "../lib/validation.js";
 import { parsePagination, pageMeta } from "../lib/pagination.js";
 import { writeAudit } from "../lib/audit.js";
+import { lockForReparent } from "../lib/locationTree.js";
 
 type Query = Record<string, string | undefined>;
 
@@ -166,21 +167,22 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const input = parseInput(locationInputSchema.partial(), request.body);
     const user = (request as AuthenticatedRequest).authUser;
     return withTransaction(async (client) => {
-      if (input.parentId === request.params.id) throw new AppError(422, "LOCATION_CYCLE", "位置不能作为自己的上级");
-      if (input.parentId) {
-        const parent = await client.query("SELECT id FROM storage_locations WHERE id = $1 AND archived_at IS NULL FOR SHARE", [input.parentId]);
-        if (!parent.rowCount) throw new AppError(422, "INVALID_PARENT", "上级位置不存在或已归档");
-        const cycle = await client.query(
-          `WITH RECURSIVE ancestors AS (
-             SELECT id, parent_id FROM storage_locations WHERE id = $1
-             UNION SELECT l.id, l.parent_id FROM storage_locations l JOIN ancestors a ON l.id = a.parent_id
-           ) SELECT id FROM ancestors WHERE id = $2`,
-          [input.parentId, request.params.id]
-        );
-        if (cycle.rowCount) throw new AppError(422, "LOCATION_CYCLE", "位置层级不能形成循环");
+      if (input.parentId !== undefined && input.parentId === request.params.id) {
+        throw new AppError(422, "LOCATION_CYCLE", "位置不能作为自己的上级");
       }
-      const before = await client.query("SELECT * FROM storage_locations WHERE id = $1 FOR UPDATE", [request.params.id]);
-      if (!before.rows[0]) throw new AppError(404, "NOT_FOUND", "位置不存在");
+      // 先按自底向上的协议锁定待移动节点与整条目标祖先链，再在锁内完成环检查，
+      // 保证交叉移动被串行化、任意深度都不会形成环（详见 locationTree.ts）。
+      let before: unknown;
+      if ("parentId" in input) {
+        before = await lockForReparent(client, request.params.id, input.parentId || null);
+      } else {
+        const existing = await client.query(
+          "SELECT * FROM storage_locations WHERE id = $1 FOR UPDATE",
+          [request.params.id]
+        );
+        if (!existing.rows[0]) throw new AppError(404, "NOT_FOUND", "位置不存在");
+        before = existing.rows[0];
+      }
       const result = await client.query(
         `UPDATE storage_locations SET name = coalesce($1, name),
           parent_id = CASE WHEN $2::boolean THEN $3 ELSE parent_id END,
@@ -188,9 +190,9 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
          WHERE id = $6 RETURNING *`,
         [input.name ?? null, "parentId" in input, input.parentId || null, "notes" in input, input.notes || null, request.params.id]
       );
-      await writeAudit(client, { actorUserId: user.id, action: "UPDATE", entityType: "LOCATION", entityId: request.params.id, beforeData: before.rows[0], afterData: result.rows[0], requestId: request.id });
+      await writeAudit(client, { actorUserId: user.id, action: "UPDATE", entityType: "LOCATION", entityId: request.params.id, beforeData: before, afterData: result.rows[0], requestId: request.id });
       return { data: result.rows[0] };
-    });
+    }, { attempts: 3 });
   });
 
   app.post<{ Params: { id: string } }>("/locations/:id/archive", async (request) => {
