@@ -85,6 +85,18 @@ export function sendError(reply: FastifyReply, error: unknown, requestId: string
   }
 
   if (databaseCode === "23502" || databaseCode === "23514" || databaseCode === "23P01") {
+    if (metadata.constraint === "storage_locations_tree_acyclic_chk") {
+      reply.status(422).send({
+        error: {
+          code: "LOCATION_CYCLE",
+          message: "位置层级不能形成循环",
+          fieldErrors: {},
+          requestId
+        }
+      });
+      return;
+    }
+
     reply.status(422).send({
       error: {
         code: "DATA_RULE_VIOLATION",

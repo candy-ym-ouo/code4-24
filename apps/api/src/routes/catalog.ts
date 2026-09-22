@@ -149,6 +149,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const user = (request as AuthenticatedRequest).authUser;
     const created = await withTransaction(async (client) => {
       if (input.parentId) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('handcraft_storage_locations_tree'))");
         const parent = await client.query("SELECT id FROM storage_locations WHERE id = $1 AND archived_at IS NULL FOR SHARE", [input.parentId]);
         if (!parent.rowCount) throw new AppError(422, "INVALID_PARENT", "上级位置不存在或已归档");
       }
@@ -166,6 +167,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const input = parseInput(locationInputSchema.partial(), request.body);
     const user = (request as AuthenticatedRequest).authUser;
     return withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('handcraft_storage_locations_tree'))");
       if (input.parentId === request.params.id) throw new AppError(422, "LOCATION_CYCLE", "位置不能作为自己的上级");
       if (input.parentId) {
         const parent = await client.query("SELECT id FROM storage_locations WHERE id = $1 AND archived_at IS NULL FOR SHARE", [input.parentId]);
@@ -196,6 +198,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string } }>("/locations/:id/archive", async (request) => {
     const user = (request as AuthenticatedRequest).authUser;
     return withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('handcraft_storage_locations_tree'))");
       const current = await client.query("SELECT id FROM storage_locations WHERE id = $1 FOR UPDATE", [request.params.id]);
       if (!current.rows[0]) throw new AppError(404, "NOT_FOUND", "位置不存在");
       const children = await client.query(
